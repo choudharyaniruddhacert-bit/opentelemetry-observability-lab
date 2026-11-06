@@ -1,0 +1,59 @@
+# ---------- 1. RECEIVERS: how data gets IN ----------
+receivers:
+  # Pull: scrape node-exporter like Prometheus does
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: node-exporter
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["node-exporter:9100"]
+
+  # Push: apps send traces, metrics and logs here
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+# ---------- 2. PROCESSORS: what happens on the way ----------
+processors:
+  memory_limiter:          # protect the Collector from running out of memory
+    check_interval: 1s
+    limit_mib: 256
+  attributes/env:          # add environment="lab" to every signal
+    actions:
+      - key: environment
+        value: lab
+        action: insert
+  batch:                   # send data in groups (efficient)
+
+# ---------- 3. EXPORTERS: where data goes OUT ----------
+exporters:
+  debug:                   # print a summary to the Collector logs
+    verbosity: basic
+  prometheus:              # serve metrics on :8889 for Prometheus to scrape (pull)
+    endpoint: 0.0.0.0:8889
+  otlp/jaeger:             # push traces to Jaeger over OTLP gRPC
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  otlphttp/loki:           # push logs to Loki over OTLP HTTP
+    endpoint: http://loki:3100/otlp
+
+# ---------- 4. SERVICE: switch the pipelines on ----------
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus, otlp]
+      processors: [memory_limiter, attributes/env, batch]
+      exporters: [debug, prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/env, batch]
+      exporters: [debug, otlp/jaeger]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/env, batch]
+      exporters: [debug, otlphttp/loki]

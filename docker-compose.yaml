@@ -1,0 +1,95 @@
+# Shared settings for the two Python apps (YAML anchor)
+x-otel-app: &otel-app
+  image: python:3.12-slim
+  volumes:
+    - ./apps:/app
+  depends_on:
+    - otel-collector
+
+services:
+  # Source of infrastructure metrics (exposes /metrics on :9100)
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - "9100:9100"
+
+  # The OpenTelemetry Collector: receive -> process -> export
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver (apps push here)
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8889:8889"   # Prometheus exporter (Prometheus scrapes here)
+    depends_on:
+      - node-exporter
+      - jaeger
+      - loki
+
+  # Traces backend + UI
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    ports:
+      - "16686:16686" # Jaeger UI
+
+  # Logs backend (viewed through Grafana)
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+
+  # Metrics backend
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+
+  # Dashboards for metrics and logs
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+  # Demo app 1: /order calls payment-service
+  order-service:
+    <<: *otel-app
+    command: >
+      sh -c "pip install -q flask requests opentelemetry-distro opentelemetry-exporter-otlp &&
+             opentelemetry-bootstrap -a install &&
+             opentelemetry-instrument python /app/order.py"
+    environment:
+      - OTEL_SERVICE_NAME=order-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=otlp
+      - OTEL_LOGS_EXPORTER=otlp
+      - OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
+    ports:
+      - "5000:5000"
+
+  # Demo app 2: /pay fails ~20% of the time
+  payment-service:
+    <<: *otel-app
+    command: >
+      sh -c "pip install -q flask opentelemetry-distro opentelemetry-exporter-otlp &&
+             opentelemetry-bootstrap -a install &&
+             opentelemetry-instrument python /app/payment.py"
+    environment:
+      - OTEL_SERVICE_NAME=payment-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=otlp
+      - OTEL_LOGS_EXPORTER=otlp
+      - OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
